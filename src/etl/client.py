@@ -40,12 +40,16 @@ class GoszakupClient:
                 
         raise RuntimeError(f"Failed to fetch {url} after {max_retries} retries.")
 
-    def paginate(self, path: str, params: dict = None) -> Iterator[dict]:
+    def paginate(self, path: str, params: dict = None, max_pages: int = None) -> Iterator[dict]:
         params = (params or {}).copy()
-        params['limit'] = 200
+        if 'limit' not in params:
+            params['limit'] = 200
+            
+        page = 1
+        seen_ids = set()
         
         while True:
-            logger.info(f"Fetching page from {path}...")
+            logger.info(f"Fetching page {page} from {path}...")
             data = self.get(path, params)
             
             items = data if isinstance(data, list) else data.get('items', [])
@@ -53,11 +57,34 @@ class GoszakupClient:
             if not items:
                 break
                 
+            new_items_count = 0
             for item in items:
+                # skip if we have already seen this exact record ID
+                item_id = item.get('id')
+                if item_id and item_id in seen_ids:
+                    continue
+                
+                if item_id:
+                    seen_ids.add(item_id)
+                
+                new_items_count += 1
                 yield item
                 
+            # if the entire page was just duplicates we've already seen, the API is looping
+            if new_items_count == 0:
+                logger.warning(f"API returned redundant data at page {page}. Breaking infinite loop.")
+                break
+                
+            if max_pages and page >= max_pages:
+                logger.info(f"Reached max_pages limit ({max_pages}). Stopping.")
+                break
+                
+            # extract next_page token
             next_page = data.get('next_page') if isinstance(data, dict) else None
-            if not next_page:
+            
+            # the token is missing or identical to the one we just requested
+            if not next_page or str(params.get('next_page')) == str(next_page):
                 break
                 
             params['next_page'] = next_page
+            page += 1
