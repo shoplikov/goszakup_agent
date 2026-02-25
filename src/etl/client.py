@@ -43,7 +43,7 @@ class GoszakupClient:
     def paginate(self, path: str, params: dict = None, max_pages: int = None) -> Iterator[dict]:
         params = (params or {}).copy()
         if 'limit' not in params:
-            params['limit'] = 200
+            params['limit'] = 1000
             
         page = 1
         seen_ids = set()
