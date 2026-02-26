@@ -1,62 +1,119 @@
-from sqlalchemy import Column, BigInteger, String, Numeric, DateTime, ForeignKey, Integer
+from sqlalchemy import Column, BigInteger, String, Numeric, DateTime, ForeignKey, Integer, Boolean
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
 
+class RefUnit(Base):
+    """
+    Reference dictionary for units of measurement.
+    Required for normalizing quantities (e.g., converting grams to kilograms).
+    """
+    __tablename__ = 'ref_units'
+
+    code = Column(String, primary_key=True)  # API uses string codes for units
+    name_ru = Column(String)
+    name_kz = Column(String)
+
+class Subject(Base):
+    """
+    Stores both Customers (Заказчики) and Suppliers (Поставщики).
+    """
+    __tablename__ = 'subjects'
+
+    pid = Column(BigInteger, primary_key=True)
+    bin = Column(String, unique=True, index=True) # Indexed for fast lookups
+    name_ru = Column(String)
+    name_kz = Column(String)
+    
+    is_customer = Column(Boolean, default=False)
+    is_supplier = Column(Boolean, default=False)
+
 class PlanPoint(Base):
-    """
-    Stores Annual Plans. 
-    Crucial because it holds the 'ref_enstru_code' (KTRU code) and 'kato' (region).
-    """
     __tablename__ = 'plans'
 
     id = Column(BigInteger, primary_key=True)
-    subject_biin = Column(String)           # BIN of the buyer
-    ref_enstru_code = Column(String)        # The specific item code (e.g., 324012.300.000000)
-    price = Column(Numeric)                 # Planned price
-    count = Column(Numeric)                 # Planned quantity
-    amount = Column(Numeric)                # Planned total amount
-    date_approved = Column(DateTime)
+    subject_biin = Column(String, ForeignKey('subjects.bin'), nullable=True)
+    ref_enstru_code = Column(String, index=True)
     
-    # We will extract the KATO code from the nested JSON in the API and store it here
-    # This is required for the "Regional Coefficient" in your Fair Price metric
-    kato_code = Column(String)              
+    # Link to the reference dictionary
+    ref_units_code = Column(String, ForeignKey('ref_units.code'), nullable=True) 
+    
+    price = Column(Numeric)
+    count = Column(Numeric)
+    amount = Column(Numeric)
+    date_approved = Column(DateTime)
+    kato_code = Column(String)
 
-    # Relationship to contract units
     units = relationship("ContractUnit", back_populates="plan_point")
 
+class Announcement(Base):
+    """
+    Stores Procurement Announcements (Объявления / trd-buy).
+    """
+    __tablename__ = 'announcements'
+
+    id = Column(BigInteger, primary_key=True)
+    number_anno = Column(String, index=True)
+    name_ru = Column(String)
+    org_bin = Column(String, ForeignKey('subjects.bin'), nullable=True)
+    
+    total_sum = Column(Numeric)
+    publish_date = Column(DateTime)
+    start_date = Column(DateTime)
+    end_date = Column(DateTime)
+    ref_buy_status_id = Column(Integer)
+    
+    lots = relationship("Lot", back_populates="announcement")
+
+class Lot(Base):
+    """
+    Stores individual Lots within an Announcement.
+    """
+    __tablename__ = 'lots'
+
+    id = Column(BigInteger, primary_key=True)
+    trd_buy_id = Column(BigInteger, ForeignKey('announcements.id'), nullable=True)
+    lot_number = Column(String)
+    
+    name_ru = Column(String)
+    description_ru = Column(String)
+    
+    amount = Column(Numeric)
+    count = Column(Numeric)
+    
+    customer_bin = Column(String, ForeignKey('subjects.bin'), nullable=True)
+    ref_lot_status_id = Column(Integer)
+
+    announcement = relationship("Announcement", back_populates="lots")
+
 class Contract(Base):
-    """
-    Stores the main contract details.
-    """
     __tablename__ = 'contracts'
 
     id = Column(BigInteger, primary_key=True)
     contract_number = Column(String)
-    crdate = Column(DateTime)               # Creation date (helps with "Time Factor/Inflation")
-    contract_sum = Column(Numeric)          # Total sum of the contract
-    supplier_biin = Column(String)          # Who won the contract
-    customer_bin = Column(String)           # Who bought the items
+    
+    # Link back to the announcement that triggered this contract
+    trd_buy_id = Column(BigInteger, ForeignKey('announcements.id'), nullable=True) 
+    
+    crdate = Column(DateTime)
+    contract_sum = Column(Numeric)
+    
+    supplier_biin = Column(String, ForeignKey('subjects.bin'), nullable=True)
+    customer_bin = Column(String, ForeignKey('subjects.bin'), nullable=True)
     ref_contract_status_id = Column(Integer)
 
-    # Relationship to the individual items in this contract
     units = relationship("ContractUnit", back_populates="contract")
 
 class ContractUnit(Base):
-    """
-    Stores the granular items inside a contract.
-    This is the core table for finding "Anomalies" and "Fair Price".
-    """
     __tablename__ = 'contract_units'
 
     id = Column(BigInteger, primary_key=True)
     contract_id = Column(BigInteger, ForeignKey('contracts.id'))
-    pln_point_id = Column(BigInteger, ForeignKey('plans.id')) # Links back to the KTRU code!
+    pln_point_id = Column(BigInteger, ForeignKey('plans.id'), nullable=True)
     
-    item_price = Column(Numeric)            # The actual price paid per unit
-    quantity = Column(Numeric)              # The actual quantity bought
-    total_sum = Column(Numeric)             # item_price * quantity
+    item_price = Column(Numeric)
+    quantity = Column(Numeric)
+    total_sum = Column(Numeric)
     
-    # Setup relationships for easy querying in Python
     contract = relationship("Contract", back_populates="units")
     plan_point = relationship("PlanPoint", back_populates="units")
