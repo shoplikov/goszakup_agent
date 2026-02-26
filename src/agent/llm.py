@@ -3,7 +3,6 @@ from openai import AsyncOpenAI
 from sqlalchemy.orm import Session
 from src.agent.tools import FAIR_PRICE_TOOL_SCHEMA, execute_tool
 
-# Initialize the async client
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 SYSTEM_PROMPT = """
@@ -34,23 +33,21 @@ async def process_user_query(user_prompt: str, db: Session) -> str:
         {"role": "user", "content": user_prompt}
     ]
 
-    # Step 1: Send query to LLM and provide the tools
     response = await client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
         tools=[FAIR_PRICE_TOOL_SCHEMA],
         tool_choice="auto",
-        temperature=0.1 # Keep it deterministic and factual
+        temperature=0.1
     )
     
     response_message = response.choices[0].message
 
     # Step 2: Check if the LLM decided to use a tool
     if response_message.tool_calls:
-        messages.append(response_message) # Append the tool call intent to history
+        messages.append(response_message)
         
         for tool_call in response_message.tool_calls:
-            # Execute the actual Python function
             tool_result = execute_tool(
                 tool_name=tool_call.function.name,
                 arguments=tool_call.function.arguments,
@@ -73,5 +70,4 @@ async def process_user_query(user_prompt: str, db: Session) -> str:
         )
         return final_response.choices[0].message.content
 
-    # If no tools were needed (e.g., a general greeting)
     return response_message.content

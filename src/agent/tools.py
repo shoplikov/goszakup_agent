@@ -2,12 +2,11 @@ import json
 from sqlalchemy.orm import Session
 from src.analytics.fair_price import get_fair_price_bounds
 
-# The JSON schema that tells OpenAI what this tool does and what arguments it needs
 FAIR_PRICE_TOOL_SCHEMA = {
     "type": "function",
     "function": {
         "name": "check_fair_price",
-        "description": "Calculates the statistical fair price range for a specific item using its KTRU (ЕНС ТРУ) code. Use this when the user asks about price fairness, anomalies, or adequacy.",
+        "description": "Calculates the statistical fair price range for a specific item using its KTRU (ЕНСТРУ) code. Use this when the user asks about price fairness, anomalies, or adequacy.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -26,7 +25,6 @@ FAIR_PRICE_TOOL_SCHEMA = {
 }
 
 def execute_tool(tool_name: str, arguments: str, db: Session) -> str:
-    """Routes the LLM's tool call to the actual Python function."""
     args = json.loads(arguments)
     
     if tool_name == "check_fair_price":
