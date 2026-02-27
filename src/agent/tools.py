@@ -1,40 +1,73 @@
 import json
 from sqlalchemy.orm import Session
-from src.analytics.fair_price import get_fair_price_bounds
+from src.analytics.engine import check_price_deviation, detect_volume_anomaly, get_fair_price_bounds
 
-FAIR_PRICE_TOOL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "check_fair_price",
-        "description": "Calculates the statistical fair price range for a specific item using its KTRU (ЕНСТРУ) code. Use this when the user asks about price fairness, anomalies, or adequacy.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "enstru_code": {
-                    "type": "string",
-                    "description": "The exact KTRU code of the item, e.g., '259923.300.000000'"
+TOOLS_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "check_price_deviation",
+            "description": "Checks if a specific price for a KTRU code deviates more than 30% from the historical weighted average.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "enstru_code": {"type": "string", "description": "The KTRU code (e.g., '351210.900.000000')"},
+                    "target_price": {"type": "number", "description": "The price to check"}
                 },
-                "kato_code": {
-                    "type": "string",
-                    "description": "The regional KATO code, if specified by the user."
-                }
-            },
-            "required": ["enstru_code"]
+                "required": ["enstru_code", "target_price"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "detect_volume_anomaly",
+            "description": "Detects atypical inflation in the volume/quantity of goods purchased by a specific customer compared to previous years.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "customer_bin": {"type": "string", "description": "The BIN of the customer organization"},
+                    "enstru_code": {"type": "string", "description": "The KTRU code"}
+                },
+                "required": ["customer_bin", "enstru_code"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_fair_price",
+            "description": "Calculates the statistical fair price (IQR) and median for an item, optionally filtered by region (KATO) or year.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "enstru_code": {"type": "string", "description": "The KTRU code"},
+                    "kato_code": {"type": "string", "description": "Regional KATO code, if specified"},
+                    "year_filter": {"type": "integer", "description": "Specific year, if specified"}
+                },
+                "required": ["enstru_code"]
+            }
         }
     }
-}
+]
 
 def execute_tool(tool_name: str, arguments: str, db: Session) -> str:
     args = json.loads(arguments)
     
-    if tool_name == "check_fair_price":
-        enstru_code = args.get("enstru_code")
-        kato_code = args.get("kato_code")
-        
-        result = get_fair_price_bounds(db, enstru_code=enstru_code, kato_code=kato_code)
-        if not result:
-            return json.dumps({"error": f"No historical pricing data found for KTRU {enstru_code}."})
+    try:
+        if tool_name == "check_price_deviation":
+            res = check_price_deviation(db, args["enstru_code"], args["target_price"])
+            return res.model_dump_json() if res else json.dumps({"error": "No data found for this KTRU."})
             
-        return result.model_dump_json()
+        elif tool_name == "detect_volume_anomaly":
+            res = detect_volume_anomaly(db, args["customer_bin"], args["enstru_code"])
+            return res.model_dump_json() if res else json.dumps({"error": "No historical volume data found."})
+            
+        elif tool_name == "get_fair_price":
+            res = get_fair_price_bounds(db, args["enstru_code"], args.get("kato_code"), args.get("year_filter"))
+            return res.model_dump_json() if res else json.dumps({"error": "Insufficient data to calculate fair price."})
+            
+    except Exception as e:
+        return json.dumps({"error": str(e)})
         
-    return json.dumps({"error": "Unknown tool called."})
+    return json.dumps({"error": "Unknown tool."})
