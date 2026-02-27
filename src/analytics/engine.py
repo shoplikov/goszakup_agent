@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from src.db.session import SessionLocal
 from src.db.models import Contract, ContractUnit, PlanPoint
 
+# Output models for the agent
 class PriceDeviationResult(BaseModel):
     enstru_code: str
     weighted_average_price: float
@@ -13,6 +14,7 @@ class PriceDeviationResult(BaseModel):
     deviation_percentage: float
     is_anomalous: bool
     sample_size_units: int
+    top_k_links: List[str]
 
 class VolumeAnomalyResult(BaseModel):
     customer_bin: str
@@ -20,6 +22,7 @@ class VolumeAnomalyResult(BaseModel):
     yearly_volumes: Dict[int, float]
     is_anomalous: bool
     description: str
+    top_k_links: List[str]
 
 class FairPriceResult(BaseModel):
     enstru_code: str
@@ -29,13 +32,14 @@ class FairPriceResult(BaseModel):
     fair_min: float
     fair_max: float
     confidence: str
+    top_k_links: List[str]
 
-
+# Analytical functions
 def check_price_deviation(db: Session, enstru_code: str, target_price: float) -> Optional[PriceDeviationResult]:
-    # Joining ContractUnit and PlanPoint to get prices for the specific KTRU
     query = db.query(
         ContractUnit.item_price,
-        ContractUnit.quantity
+        ContractUnit.quantity,
+        ContractUnit.contract_id  
     ).join(
         PlanPoint, ContractUnit.pln_point_id == PlanPoint.id
     ).filter(
@@ -48,7 +52,7 @@ def check_price_deviation(db: Session, enstru_code: str, target_price: float) ->
     if not results:
         return None
         
-    df = pd.DataFrame(results, columns=['price', 'quantity'])
+    df = pd.DataFrame(results, columns=['price', 'quantity', 'contract_id'])
     df['price'] = pd.to_numeric(df['price'])
     df['quantity'] = pd.to_numeric(df['quantity'])
     
@@ -63,7 +67,11 @@ def check_price_deviation(db: Session, enstru_code: str, target_price: float) ->
     
     # calculating deviation
     deviation = ((target_price - w_avg_price) / w_avg_price) * 100
-    is_anomalous = abs(deviation) > 30.0 # 30% threshold for anomaly
+    is_anomalous = abs(deviation) > 30.0
+    
+    # the top 3 most expensive contracts as links
+    top_k_ids = df.nlargest(3, 'price')['contract_id'].unique()
+    top_k_links = [f"https://goszakup.gov.kz/ru/contract/show/{cid}" for cid in top_k_ids]
     
     return PriceDeviationResult(
         enstru_code=enstru_code,
@@ -71,14 +79,15 @@ def check_price_deviation(db: Session, enstru_code: str, target_price: float) ->
         target_price=target_price,
         deviation_percentage=float(deviation),
         is_anomalous=is_anomalous,
-        sample_size_units=len(df)
+        sample_size_units=len(df),
+        top_k_links=top_k_links
     )
 
 def detect_volume_anomaly(db: Session, customer_bin: str, enstru_code: str) -> Optional[VolumeAnomalyResult]:
-    # quantities grouped by year for a specific customer and item
     query = db.query(
         func.extract('year', Contract.crdate).label('year'),
-        func.sum(ContractUnit.quantity).label('total_qty')
+        func.sum(ContractUnit.quantity).label('total_qty'),
+        func.max(Contract.id).label('latest_contract_id') # Fetch a sample ID
     ).join(
         ContractUnit, Contract.id == ContractUnit.contract_id
     ).join(
@@ -95,6 +104,7 @@ def detect_volume_anomaly(db: Session, customer_bin: str, enstru_code: str) -> O
         return None
 
     yearly_vols = {int(row.year): float(row.total_qty) for row in results}
+    sample_ids = [row.latest_contract_id for row in results if row.latest_contract_id]
     
     # anomaly - if the latest year's volume is > 200% of the historical average
     is_anomalous = False
@@ -104,7 +114,6 @@ def detect_volume_anomaly(db: Session, customer_bin: str, enstru_code: str) -> O
     if len(years) > 1:
         latest_year = years[-1]
         latest_vol = yearly_vols[latest_year]
-        
         historical_vols = [yearly_vols[y] for y in years[:-1]]
         hist_avg = sum(historical_vols) / len(historical_vols)
         
@@ -112,17 +121,22 @@ def detect_volume_anomaly(db: Session, customer_bin: str, enstru_code: str) -> O
             is_anomalous = True
             description = f"Volume in {latest_year} ({latest_vol}) is significantly higher than historical average ({hist_avg:.2f})."
 
+    # the top 3 contracts as links
+    top_k_links = [f"https://goszakup.gov.kz/ru/contract/show/{cid}" for cid in sample_ids[-3:]]
+
     return VolumeAnomalyResult(
         customer_bin=customer_bin,
         enstru_code=enstru_code,
         yearly_volumes=yearly_vols,
         is_anomalous=is_anomalous,
-        description=description
+        description=description,
+        top_k_links=top_k_links
     )
 
 def get_fair_price_bounds(db: Session, enstru_code: str, kato_code: Optional[str] = None, year_filter: Optional[int] = None) -> Optional[FairPriceResult]:
     query = db.query(
-        ContractUnit.item_price
+        ContractUnit.item_price,
+        ContractUnit.contract_id
     ).join(
         PlanPoint, ContractUnit.pln_point_id == PlanPoint.id
     ).join(
@@ -141,7 +155,7 @@ def get_fair_price_bounds(db: Session, enstru_code: str, kato_code: Optional[str
     if not results or len(results) < 3:
         return None
 
-    df = pd.DataFrame(results, columns=['price'])
+    df = pd.DataFrame(results, columns=['price', 'contract_id'])
     df['price'] = pd.to_numeric(df['price'])
     
     q1 = df['price'].quantile(0.25)
@@ -152,6 +166,10 @@ def get_fair_price_bounds(db: Session, enstru_code: str, kato_code: Optional[str
     lower_bound = max(0, q1 - (1.5 * iqr))
     upper_bound = q3 + (1.5 * iqr)
 
+    # the top 3 contracts as links
+    median_examples = df.iloc[(df['price'] - median).abs().argsort()[:3]]
+    top_k_links = [f"https://goszakup.gov.kz/ru/contract/show/{cid}" for cid in median_examples['contract_id'].unique()]
+
     return FairPriceResult(
         enstru_code=enstru_code,
         kato_code=kato_code,
@@ -159,6 +177,6 @@ def get_fair_price_bounds(db: Session, enstru_code: str, kato_code: Optional[str
         median_price=float(median),
         fair_min=float(lower_bound),
         fair_max=float(upper_bound),
-        confidence="High" if len(df) >= 30 else "Medium"
+        confidence="High" if len(df) >= 30 else "Medium",
+        top_k_links=top_k_links
     )
-    

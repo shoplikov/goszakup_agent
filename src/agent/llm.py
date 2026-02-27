@@ -1,8 +1,11 @@
 import os
+import logging
 from openai import AsyncOpenAI
 from sqlalchemy.orm import Session
 from src.agent.tools import TOOLS_SCHEMA, execute_tool
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 SYSTEM_PROMPT = """
@@ -15,16 +18,18 @@ STRICT RESPONSE FORMAT (Respond in the language of the user, KZ or RU):
 3. Сравнение: (Provide the specific median, weighted average, and deviation percentages).
 4. Метрика оценки: (State if IQR or Weighted Average was used).
 5. Ограничения и уверенность: (Mention the sample size and data quality).
-6. Примеры: (Provide a link format: https://goszakup.gov.kz/ru/contract/show/{contract_id} if applicable).
+6. Примеры: (Provide a bulleted list of the Top-K direct links returned by the tool).
 """
 
 async def process_user_query(user_prompt: str, db: Session) -> str:
+    logger.info(f"Received User Prompt: {user_prompt}")
+    
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt}
     ]
 
-    # providing tools to the model
+    logger.info("Sending query to LLM to determine intent")
     response = await client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages,
@@ -35,7 +40,6 @@ async def process_user_query(user_prompt: str, db: Session) -> str:
     
     response_message = response.choices[0].message
 
-    # executing tool
     if response_message.tool_calls:
         messages.append(response_message)
         
@@ -52,12 +56,14 @@ async def process_user_query(user_prompt: str, db: Session) -> str:
                 "content": tool_result
             })
             
-        # summarizing the final result
+        logger.info("Tool data injected. Asking LLM to format final response")
         final_response = await client.chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
             temperature=0.1
         )
+        logger.info("Final response generated.")
         return final_response.choices[0].message.content
 
+    logger.info("LLM decided no tools were needed.")
     return response_message.content

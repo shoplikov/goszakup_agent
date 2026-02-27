@@ -1,6 +1,10 @@
 import json
 from sqlalchemy.orm import Session
 from src.analytics.engine import check_price_deviation, detect_volume_anomaly, get_fair_price_bounds
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 TOOLS_SCHEMA = [
     {
@@ -53,21 +57,26 @@ TOOLS_SCHEMA = [
 
 def execute_tool(tool_name: str, arguments: str, db: Session) -> str:
     args = json.loads(arguments)
+    logger.info(f"Agent called tool: '{tool_name}' with args: {args}")
     
     try:
         if tool_name == "check_price_deviation":
             res = check_price_deviation(db, args["enstru_code"], args["target_price"])
-            return res.model_dump_json() if res else json.dumps({"error": "No data found for this KTRU."})
+            result_json = res.model_dump_json() if res else json.dumps({"error": "No data found for this KTRU."})
             
         elif tool_name == "detect_volume_anomaly":
             res = detect_volume_anomaly(db, args["customer_bin"], args["enstru_code"])
-            return res.model_dump_json() if res else json.dumps({"error": "No historical volume data found."})
+            result_json = res.model_dump_json() if res else json.dumps({"error": "No historical volume data found."})
             
         elif tool_name == "get_fair_price":
             res = get_fair_price_bounds(db, args["enstru_code"], args.get("kato_code"), args.get("year_filter"))
-            return res.model_dump_json() if res else json.dumps({"error": "Insufficient data to calculate fair price."})
+            result_json = res.model_dump_json() if res else json.dumps({"error": "Insufficient data to calculate fair price."})
+            
+        else:
+            result_json = json.dumps({"error": "Unknown tool."})
             
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        result_json = json.dumps({"error": str(e)})
         
-    return json.dumps({"error": "Unknown tool."})
+    logger.info(f"Data returned to Agent:\n{result_json}")
+    return result_json
