@@ -6,22 +6,41 @@ Base = declarative_base()
 class RefUnit(Base):
     """
     Reference dictionary for units of measurement.
-    Required for normalizing quantities (e.g., converting grams to kilograms).
     """
     __tablename__ = 'ref_units'
 
-    code = Column(String, primary_key=True)  # API uses string codes for units
+    code = Column(String, primary_key=True)
     name_ru = Column(String)
     name_kz = Column(String)
 
+class RefEnstru(Base):
+    """
+    Reference dictionary for KTRU (ENSTRU) codes.
+    """
+    __tablename__ = 'ref_enstru'
+
+    code = Column(String, primary_key=True)
+    name_ru = Column(String)
+    name_kz = Column(String)
+
+class RefKato(Base):
+    """
+    Reference dictionary for KATO codes (Regions).
+    """
+    __tablename__ = 'ref_kato'
+
+    code = Column(String, primary_key=True)
+    full_name_ru = Column(String)
+    full_name_kz = Column(String)
+
 class Subject(Base):
     """
-    Stores both Customers (Заказчики) and Suppliers (Поставщики).
+    Store for both Customers and Suppliers.
     """
     __tablename__ = 'subjects'
 
     pid = Column(BigInteger, primary_key=True)
-    bin = Column(String, unique=True, index=True) # Indexed for fast lookups
+    bin = Column(String, unique=True, index=True)
     name_ru = Column(String)
     name_kz = Column(String)
     
@@ -29,13 +48,15 @@ class Subject(Base):
     is_supplier = Column(Boolean, default=False)
 
 class PlanPoint(Base):
+    """
+    Stores plans of organization for procurement.
+    """
     __tablename__ = 'plans'
 
     id = Column(BigInteger, primary_key=True)
     subject_biin = Column(String, ForeignKey('subjects.bin'), nullable=True)
-    ref_enstru_code = Column(String, index=True)
     
-    # Link to the reference dictionary
+    ref_enstru_code = Column(String, index=True)
     ref_units_code = Column(String, ForeignKey('ref_units.code'), nullable=True) 
     
     price = Column(Numeric)
@@ -92,7 +113,6 @@ class Contract(Base):
     id = Column(BigInteger, primary_key=True)
     contract_number = Column(String)
     
-    # Link back to the announcement that triggered this contract
     trd_buy_id = Column(BigInteger, ForeignKey('announcements.id'), nullable=True) 
     
     crdate = Column(DateTime)
