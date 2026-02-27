@@ -97,7 +97,6 @@ class Lot(Base):
     lot_number = Column(String)
     
     name_ru = Column(String)
-    description_ru = Column(String)
     
     amount = Column(Numeric)
     count = Column(Numeric)
