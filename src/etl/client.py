@@ -23,7 +23,7 @@ class GoszakupClient:
         
         for attempt in range(max_retries):
             try:
-                response = self.session.get(url, params=params, timeout=30)
+                response = self.session.get(url, params=params, timeout=90)
                 
                 if response.status_code == 429:
                     sleep_time = 2 ** attempt * 5
@@ -59,7 +59,7 @@ class GoszakupClient:
                 
             new_items_count = 0
             for item in items:
-                # skip if we have already seen this exact record ID
+                # skip seen ids
                 item_id = item.get('id')
                 if item_id and item_id in seen_ids:
                     continue
@@ -70,7 +70,7 @@ class GoszakupClient:
                 new_items_count += 1
                 yield item
                 
-            # if the entire page was just duplicates we've already seen, the API is looping
+            # if page is seen
             if new_items_count == 0:
                 logger.warning(f"API returned redundant data at page {page}. Breaking infinite loop.")
                 break
