@@ -10,10 +10,13 @@ dependencies = [
     "dotenv>=0.9.9",
     "fastapi>=0.133.0",
     "openai>=2.23.0",
+    "langchain-core>=0.3.0",
+    "langchain-openai>=0.2.0",
     "pandas>=3.0.1",
     "psycopg2-binary>=2.9.11",
     "pydantic>=2.12.5",
     "uvicorn>=0.41.0",
+    "langchain>=1.2.10",
 ]
 
 [dependency-groups]

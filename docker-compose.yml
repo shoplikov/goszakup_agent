@@ -36,7 +36,7 @@ services:
       sleep 60;
       while true; do
         echo 'Running scheduled ETL pipeline...';
-        uv run python -m src.etl.run_daily_update;
+        uv run python -m src.etl.sync_daily;
         echo 'ETL COMPLETE. Sleeping for 24 hours...';
         sleep 86400;
       done"
