@@ -8,12 +8,38 @@ services:
     ports:
       - "5432:5432"
     volumes:
+      - ./db_init:/docker-entrypoint-initdb.d
       - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h localhost"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+
+  api:
+    build: .
+    container_name: goszakup_api
+    restart: always
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+    ports:
+      - "8000:8000"
+
+  etl_worker:
+    build: .
+    container_name: goszakup_etl
+    restart: always
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+    command: >
+      sh -c "
+      echo 'Starting initial ETL deployment, waiting for DB readiness...';
+      sleep 60;
+      while true; do
+        echo 'Running scheduled ETL pipeline...';
+        uv run python -m src.etl.run_daily_update;
+        echo 'ETL COMPLETE. Sleeping for 24 hours...';
+        sleep 86400;
+      done"
 
 volumes:
   pgdata:
