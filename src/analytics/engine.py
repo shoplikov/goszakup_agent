@@ -180,3 +180,81 @@ def get_fair_price_bounds(db: Session, enstru_code: str, kato_code: Optional[str
         confidence="High" if len(df) >= 30 else "Medium",
         top_k_links=top_k_links
     )
+
+
+def analyze_price_dynamics(db: Session, enstru_code: str) -> Dict[str, Any]:
+    results = db.query(
+        func.extract('year', Contract.crdate).label('year'),
+        func.extract('month', Contract.crdate).label('month'),
+        func.avg(ContractUnit.item_price).label('avg_price'),
+        func.count(ContractUnit.id).label('purchase_count')
+    ).join(
+        ContractUnit, Contract.id == ContractUnit.contract_id
+    ).join(
+        PlanPoint, ContractUnit.pln_point_id == PlanPoint.id
+    ).filter(
+        PlanPoint.ref_enstru_code == enstru_code,
+        Contract.crdate.isnot(None),
+        ContractUnit.item_price > 0
+    ).group_by(
+        'year', 'month'
+    ).order_by(
+        'year', 'month'
+    ).all()
+
+    if not results:
+        return {"error": f"No historical price data found for ENSTRU code {enstru_code}."}
+
+    timeline: Dict[int, Dict[str, Dict[str, Any]]] = {}
+    for row in results:
+        year = int(row.year)
+        month = int(row.month)
+        avg_price = round(float(row.avg_price), 2)
+
+        if year not in timeline:
+            timeline[year] = {}
+
+        timeline[year][f"Month_{month}"] = {
+            "average_price": avg_price,
+            "purchase_count": row.purchase_count
+        }
+
+    return {
+        "enstru_code": enstru_code,
+        "analysis_type": "price_dynamics_and_seasonality",
+        "timeline": timeline,
+        "note_to_llm": "Use this chronological data to calculate inflation percentages between years and identify seasonal price spikes in specific months."
+    }
+
+
+def get_top_contracts(db: Session, customer_bin: str, limit: int = 5) -> Dict[str, Any]:
+    contracts = db.query(Contract).filter(
+        Contract.customer_bin == customer_bin,
+        Contract.contract_sum > 0
+    ).order_by(
+        Contract.contract_sum.desc()
+    ).limit(limit).all()
+
+    if not contracts:
+        return {"error": f"No contracts found for BIN {customer_bin}."}
+
+    top_k_list: List[Dict[str, Any]] = []
+    total_spent_in_top_k = 0.0
+
+    for c in contracts:
+        sum_val = float(c.contract_sum)
+        total_spent_in_top_k += sum_val
+        top_k_list.append({
+            "contract_number": c.contract_number,
+            "date": c.crdate.strftime("%Y-%m-%d") if c.crdate else "Unknown",
+            "sum_kzt": sum_val,
+            "link": f"https://goszakup.gov.kz/ru/contract/show/{c.id}",
+        })
+
+    return {
+        "analysis_type": "top_k_expensive_contracts",
+        "customer_bin": customer_bin,
+        "total_sum_of_top_k": total_spent_in_top_k,
+        "top_contracts": top_k_list,
+        "note_to_llm": "Use this data to list the Top-K most expensive contracts. Ensure you provide the exact links in your final output.",
+    }
