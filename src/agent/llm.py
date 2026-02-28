@@ -1,12 +1,15 @@
-import os
+import json
 import logging
-from openai import AsyncOpenAI
-from sqlalchemy.orm import Session
-from src.agent.tools import TOOLS_SCHEMA, execute_tool
+import os
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from sqlalchemy.orm import Session
+
+from src.agent.tools import build_tools
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 SYSTEM_PROMPT = """
 You are an expert AI Data Analyst for the Kazakhstan Public Procurement system (goszakup.gov.kz).
@@ -23,47 +26,63 @@ STRICT RESPONSE FORMAT (Respond in the language of the user, KZ or RU):
 
 async def process_user_query(user_prompt: str, db: Session) -> str:
     logger.info(f"Received User Prompt: {user_prompt}")
-    
+
+    tools = build_tools(db)
+    logger.info(f"Initialized {len(tools)} tools for the agent")
+
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0.1,
+        api_key=os.getenv("OPENAI_API_KEY"),
+    )
+    llm_with_tools = llm.bind_tools(tools)
+
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_prompt}
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=user_prompt),
     ]
 
-    logger.info("Sending query to LLM to determine intent")
-    response = await client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        tools=TOOLS_SCHEMA,
-        tool_choice="auto",
-        temperature=0.1
-    )
-    
-    response_message = response.choices[0].message
+    logger.info("Calling LLM to decide on tool usage")
+    first_response = await llm_with_tools.ainvoke(messages)
 
-    if response_message.tool_calls:
-        messages.append(response_message)
-        
-        for tool_call in response_message.tool_calls:
-            tool_result = execute_tool(
-                tool_name=tool_call.function.name,
-                arguments=tool_call.function.arguments,
-                db=db
+    tool_calls = getattr(first_response, "tool_calls", None) or []
+    if not tool_calls:
+        logger.info("LLM decided no tools were needed.")
+        return first_response.content or ""
+
+    logger.info("LLM requested %d tool call(s)", len(tool_calls))
+
+    tool_map = {tool.name: tool for tool in tools}
+
+    tool_messages: list[ToolMessage] = []
+    for call in tool_calls:
+        name = getattr(call, "name", None) or call.get("name")
+        args = getattr(call, "args", None) or call.get("args", {})
+        call_id = getattr(call, "id", None) or call.get("id")
+
+        logger.info(f"Executing tool '{name}' with args={args}")
+        tool = tool_map.get(name)
+        if tool is None:
+            logger.warning(f"Requested unknown tool '{name}'")
+            result = {"error": f"Unknown tool '{name}'."}
+        else:
+            try:
+                result = tool.invoke(args)
+            except Exception as e:
+                logger.exception(f"Error while executing tool '{name}'")
+                result = {"error": str(e)}
+
+        content = result if isinstance(result, str) else json.dumps(result)
+        tool_messages.append(
+            ToolMessage(
+                content=content,
+                tool_call_id=str(call_id) if call_id is not None else "",
             )
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "name": tool_call.function.name,
-                "content": tool_result
-            })
-            
-        logger.info("Tool data injected. Asking LLM to format final response")
-        final_response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.1
         )
-        logger.info("Final response generated.")
-        return final_response.choices[0].message.content
 
-    logger.info("LLM decided no tools were needed.")
-    return response_message.content
+    final_messages = messages + [first_response] + tool_messages
+    logger.info("Asking LLM to format final response")
+    final_response = await llm.ainvoke(final_messages)
+    logger.info("Final response generated.")
+
+    return final_response.content or ""

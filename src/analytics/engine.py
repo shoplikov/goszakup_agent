@@ -3,10 +3,8 @@ from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from pydantic import BaseModel
-from src.db.session import SessionLocal
 from src.db.models import Contract, ContractUnit, PlanPoint
 
-# Output models for the agent
 class PriceDeviationResult(BaseModel):
     enstru_code: str
     weighted_average_price: float
@@ -34,7 +32,6 @@ class FairPriceResult(BaseModel):
     confidence: str
     top_k_links: List[str]
 
-# Analytical functions
 def check_price_deviation(db: Session, enstru_code: str, target_price: float) -> Optional[PriceDeviationResult]:
     query = db.query(
         ContractUnit.item_price,
@@ -56,7 +53,6 @@ def check_price_deviation(db: Session, enstru_code: str, target_price: float) ->
     df['price'] = pd.to_numeric(df['price'])
     df['quantity'] = pd.to_numeric(df['quantity'])
     
-    # calculating weighted avg: sum(price * quantity) / sum(quantity)
     total_value = (df['price'] * df['quantity']).sum()
     total_quantity = df['quantity'].sum()
     
@@ -65,11 +61,9 @@ def check_price_deviation(db: Session, enstru_code: str, target_price: float) ->
         
     w_avg_price = total_value / total_quantity
     
-    # calculating deviation
     deviation = ((target_price - w_avg_price) / w_avg_price) * 100
     is_anomalous = abs(deviation) > 30.0
     
-    # the top 3 most expensive contracts as links
     top_k_ids = df.nlargest(3, 'price')['contract_id'].unique()
     top_k_links = [f"https://goszakup.gov.kz/ru/contract/show/{cid}" for cid in top_k_ids]
     
@@ -184,10 +178,11 @@ def get_fair_price_bounds(db: Session, enstru_code: str, kato_code: Optional[str
 
 def analyze_price_dynamics(db: Session, enstru_code: str) -> Dict[str, Any]:
     results = db.query(
-        func.extract('year', Contract.crdate).label('year'),
-        func.extract('month', Contract.crdate).label('month'),
-        func.avg(ContractUnit.item_price).label('avg_price'),
-        func.count(ContractUnit.id).label('purchase_count')
+        func.extract("year", Contract.crdate).label("year"),
+        func.extract("month", Contract.crdate).label("month"),
+        func.avg(ContractUnit.item_price).label("avg_price"),
+        func.count(ContractUnit.id).label("purchase_count"),
+        func.max(Contract.id).label("sample_contract_id"),
     ).join(
         ContractUnit, Contract.id == ContractUnit.contract_id
     ).join(
@@ -195,17 +190,21 @@ def analyze_price_dynamics(db: Session, enstru_code: str) -> Dict[str, Any]:
     ).filter(
         PlanPoint.ref_enstru_code == enstru_code,
         Contract.crdate.isnot(None),
-        ContractUnit.item_price > 0
+        ContractUnit.item_price > 0,
     ).group_by(
-        'year', 'month'
+        "year",
+        "month",
     ).order_by(
-        'year', 'month'
+        "year",
+        "month",
     ).all()
 
     if not results:
         return {"error": f"No historical price data found for ENSTRU code {enstru_code}."}
 
     timeline: Dict[int, Dict[str, Dict[str, Any]]] = {}
+    sample_contract_ids: List[int] = []
+
     for row in results:
         year = int(row.year)
         month = int(row.month)
@@ -216,14 +215,28 @@ def analyze_price_dynamics(db: Session, enstru_code: str) -> Dict[str, Any]:
 
         timeline[year][f"Month_{month}"] = {
             "average_price": avg_price,
-            "purchase_count": row.purchase_count
+            "purchase_count": int(row.purchase_count),
         }
+
+        if row.sample_contract_id:
+            sample_contract_ids.append(int(row.sample_contract_id))
+
+    # Use up to 5 example contracts as direct links for the LLM.
+    unique_ids = list(dict.fromkeys(sample_contract_ids))[:5]
+    top_k_links = [
+        f"https://goszakup.gov.kz/ru/contract/show/{cid}" for cid in unique_ids
+    ]
 
     return {
         "enstru_code": enstru_code,
         "analysis_type": "price_dynamics_and_seasonality",
         "timeline": timeline,
-        "note_to_llm": "Use this chronological data to calculate inflation percentages between years and identify seasonal price spikes in specific months."
+        "top_k_links": top_k_links,
+        "note_to_llm": (
+            "Use this chronological data to calculate inflation percentages between years "
+            "and identify seasonal price spikes in specific months. When giving example links, "
+            "ONLY use the provided 'top_k_links' and do not fabricate generic URLs."
+        ),
     }
 
 
